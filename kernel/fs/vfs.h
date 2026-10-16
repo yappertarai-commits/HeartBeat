@@ -114,17 +114,17 @@ inline void init() {
         "theme=dark\n"
         "resolution=1920x1080\n"
         "shell=/bin/sh\n"
-        "hostname=foxiwium\n"
+        "hostname=localhost\n"
         "timezone=UTC\n";
     write_file(foxconf, foxconf_content, 106);
 
     int bashrc = create_node(".bashrc", NODE_FILE, user);
     const char* bashrc_content =
         "# ~/.bashrc\n"
-        "export PS1='\\u@foxiwium:\\w$ '\n"
+        "export PS1='\\u@heartbeat:\\w$ '\n"
         "export PATH=/bin:/usr/bin\n"
         "alias ll='ls -la'\n"
-        "alias cls='clear'\n";
+        "alias c='clear'\n";
     write_file(bashrc, bashrc_content, 97);
 
     int doc_notes = create_node("notes.txt", NODE_FILE, documents);

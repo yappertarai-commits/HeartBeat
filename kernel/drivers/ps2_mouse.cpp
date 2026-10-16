@@ -13,6 +13,7 @@ volatile int cursor_y = 540;
 
 volatile bool left_pressed = false;
 volatile bool right_pressed = false;
+volatile bool middle_pressed = false;
 volatile bool left_pressed_prev = false;
 volatile int scroll_delta = 0;
 
@@ -75,6 +76,7 @@ static void process_packet() {
     left_pressed_prev = left_pressed;
     left_pressed = current.left;
     right_pressed = current.right;
+    middle_pressed = current.middle;
 
     if (has_wheel) {
         current.scroll = (int8_t)mouse_buffer[3];

@@ -14,6 +14,8 @@
 #include "graphics/framebuffer.h"
 #include "graphics/graphics.h"
 #include "graphics/font.h"
+#include "graphics/x18_session.h"
+#include "graphics/compositor.h"
 #include "graphics/wallpaper.h"
 #include "graphics/boot.h"
 #include "gui/window.h"
@@ -54,14 +56,35 @@ static void serial_init() {
 static void serial_print(const char* s) {
     while (*s) { while((port::inb(0x3F8+5)&0x20)==0); port::outb(0x3F8,*s++); }
 }
+static void serial_print_hex32(uint32_t v) {
+    serial_print("0x");
+    char buf[9]; buf[8] = 0;
+    for (int i = 7; i >= 0; i--) { buf[i] = "0123456789abcdef"[v & 0xF]; v >>= 4; }
+    serial_print(buf);
+}
 
 extern "C" void syscall_entry();
 
 ProcessControlBlock pcb;
 
+extern bool preempt_need_switch;
+extern bool preempt_frame_saved;
+extern idt::InterruptFrame preempt_frame;
 extern "C" void idt_dispatch(idt::InterruptFrame* frame) {
+    static bool preempt_need_switch = false;
     uint8_t vec = frame->int_no;
-    if (vec == 32) { pit::handler(); }
+    if (vec == 32) { 
+        pit::handler(); 
+        if (frame->cs == USER_CS) {
+            Process* p = proc::get_current();
+            if (p) {
+                for (uint64_t i = 0; i < sizeof(idt::InterruptFrame); i++)
+                    ((uint8_t*)&p->saved_frame)[i] = ((uint8_t*)frame)[i];
+                p->has_saved_frame = true;
+                preempt_need_switch = true;
+            }
+        }
+    }
     else if (vec == 33) { uint8_t sc = port::inb(0x60); keyboard::handle_scancode(sc); }
     else if (vec == 44) { mouse::handle_packet(); }
     else if (vec == 14) {
@@ -156,6 +179,16 @@ extern "C" void idt_dispatch(idt::InterruptFrame* frame) {
         for (int i = 0; i < 16; i++) debug_putchar(buf[i]);
         debug_print("\n[FATAL] Halting.\n");
         while(true) asm volatile("cli; hlt");
+    }
+    if (preempt_need_switch && frame->cs == USER_CS) {
+        preempt_need_switch = false;
+        Process* p = proc::get_current();
+        if (p && p->has_saved_frame) {
+            vmm::switch_pml4(vmm::get_kernel_pml4());
+            gdt::set_kernel_stack((uint64_t)p->kernel_stack + 4096);
+            __asm__ volatile("cli");
+            proc::resume_user(*p);
+        }
     }
     pic::eoi(vec);
 }
@@ -380,8 +413,10 @@ static bool system_sleeping = false;
 
 // Draw a power symbol (vertical line + circle outline)
 static void draw_power_icon(int cx, int cy, Color c) {
-    graphics::draw_circle(cx, cy + 1, 6, c);
-    graphics::fill_rect(cx - 1, cy - 8, 2, 9, c);
+    x18::Surface scr = x18session::surface();
+    x18::Raster r(scr);
+    r.stroke_circle(cx, cy + 1, 6, x18session::to_x18(c));
+    r.fill(cx - 1, cy - 8, 2, 9, x18session::to_x18(c));
 }
 
 static void draw_panel() {
@@ -389,10 +424,13 @@ static void draw_panel() {
     uint32_t fh = framebuffer::get_height();
     int py = fh - theme::PANEL_H;
 
+    x18::Surface scr = x18session::surface();
+    x18::Raster r(scr);
+
     // Glass panel (rounded top corners, translucent)
-    graphics::fill_rounded_rect_top_alpha(0, py, fw, theme::PANEL_H, theme::RADIUS, theme::GLASS_PANEL);
+    r.fill_round_top_alpha(0, py, fw, theme::PANEL_H, theme::RADIUS, x18session::to_x18(theme::GLASS_PANEL));
     // Top shine line
-    graphics::fill_rect_alpha(0, py, fw, 1, theme::GLASS_SHINE);
+    r.fill_alpha(0, py, fw, 1, x18session::to_x18(theme::GLASS_SHINE));
 
     // --- Left: Launcher button (diamond logo) ---
     int lx = 0;
@@ -402,9 +440,9 @@ static void draw_panel() {
     bool launcher_hovered = (mouse::cursor_x >= lx && mouse::cursor_x < lx + lw &&
                              mouse::cursor_y >= py && mouse::cursor_y < py + (int)fh);
     if (launcher_hovered || launcher_open) {
-        graphics::fill_rounded_rect_alpha(lx + 4, py + 4, lw - 8, theme::PANEL_H - 8, 12,
-            launcher_open ? Color(theme::ACCENT.r, theme::ACCENT.g, theme::ACCENT.b, 210)
-                          : theme::GLASS_HOVER);
+        r.fill_round_alpha(lx + 4, py + 4, lw - 8, theme::PANEL_H - 8, 12,
+            x18session::to_x18(launcher_open ? Color(theme::ACCENT.r, theme::ACCENT.g, theme::ACCENT.b, 210)
+                                             : theme::GLASS_HOVER));
     }
     // Draw a simple diamond/hexagon logo
     Color logo_c = launcher_open ? theme::TEXT_W : theme::ACCENT;
@@ -417,13 +455,13 @@ static void draw_panel() {
     };
     for (int i = 0; i < 4; i++) {
         int nx = (i + 1) % 4;
-        graphics::draw_line(pts[i][0], pts[i][1], pts[nx][0], pts[nx][1], logo_c);
+        r.line(pts[i][0], pts[i][1], pts[nx][0], pts[nx][1], x18session::to_x18(logo_c));
     }
     // Fill diamond lightly
     for (int dy = -hs; dy <= hs; dy++) {
         for (int dx = -hs; dx <= hs; dx++) {
             if (dx * dx + dy * dy <= hs * hs && (dx + dy) % 2 == 0) {
-                graphics::put_pixel(lc_x + dx, lc_y + dy, logo_c);
+                r.put(lc_x + dx, lc_y + dy, x18session::to_x18(logo_c));
             }
         }
     }
@@ -442,11 +480,11 @@ static void draw_panel() {
         Color task_bg = active_task ? theme::GLASS_TASK_ON
                       : hov ? theme::GLASS_HOVER
                       : theme::GLASS_TASK;
-        graphics::fill_rounded_rect_alpha(task_x, py + 4, tw, theme::PANEL_H - 8, 10, task_bg);
+        r.fill_round_alpha(task_x, py + 4, tw, theme::PANEL_H - 8, 10, x18session::to_x18(task_bg));
 
         // Accent underline for active
         if (active_task) {
-            graphics::fill_rect(task_x + 4, py + theme::PANEL_H - 6, tw - 8, 2, theme::ACCENT);
+            r.fill(task_x + 4, py + theme::PANEL_H - 6, tw - 8, 2, x18session::to_x18(theme::ACCENT));
         }
 
         // Icon letter
@@ -461,7 +499,7 @@ static void draw_panel() {
     // --- Right: System tray + Power + Clock ---
     // Separator
     int tray_x = fw - 180;
-    graphics::fill_rect_alpha(tray_x - 1, py + 8, 1, theme::PANEL_H - 16, theme::GLASS_EDGE);
+    r.fill_alpha(tray_x - 1, py + 8, 1, theme::PANEL_H - 16, x18session::to_x18(theme::GLASS_EDGE));
 
     // Status indicators
     font::draw_string(tray_x + 8, py + 14, "RAM", theme::TEXT_DIM);
@@ -477,9 +515,9 @@ static void draw_panel() {
     bool pbtn_hover = (mouse::cursor_x >= pbtn_x && mouse::cursor_x < pbtn_x + pbtn_s &&
                        mouse::cursor_y >= py && mouse::cursor_y < py + (int)fh);
     if (power_menu_open) {
-        graphics::fill_rounded_rect_alpha(pbtn_x, pbtn_y, pbtn_s, pbtn_s, 10, Color(220, 60, 47, 210));
+        r.fill_round_alpha(pbtn_x, pbtn_y, pbtn_s, pbtn_s, 10, x18session::to_x18(Color(220, 60, 47, 210)));
     } else if (pbtn_hover) {
-        graphics::fill_rounded_rect_alpha(pbtn_x, pbtn_y, pbtn_s, pbtn_s, 10, theme::GLASS_HOVER);
+        r.fill_round_alpha(pbtn_x, pbtn_y, pbtn_s, pbtn_s, 10, x18session::to_x18(theme::GLASS_HOVER));
     }
     draw_power_icon(pbtn_x + pbtn_s / 2, pbtn_y + pbtn_s / 2, theme::TEXT_W);
 
@@ -505,20 +543,23 @@ static void draw_launcher() {
     int menu_y = fh - theme::PANEL_H - menu_h;
     int sbw = 100;
 
+    x18::Surface scr = x18session::surface();
+    x18::Raster r(scr);
+
     // Glass background
-    graphics::fill_rounded_rect_alpha(menu_x, menu_y, menu_w, menu_h, 16, theme::GLASS_MENU);
-    graphics::draw_rounded_rect_alpha(menu_x, menu_y, menu_w, menu_h, 16, theme::GLASS_EDGE);
+    r.fill_round_alpha(menu_x, menu_y, menu_w, menu_h, 16, x18session::to_x18(theme::GLASS_MENU));
+    r.stroke_round_alpha(menu_x, menu_y, menu_w, menu_h, 16, x18session::to_x18(theme::GLASS_EDGE));
 
     // Left sidebar (darker glass)
-    graphics::fill_rect_alpha(menu_x, menu_y, sbw, menu_h, Color(0, 0, 0, 70));
-    graphics::fill_rect_alpha(menu_x + sbw, menu_y, 1, menu_h, theme::GLASS_EDGE);
+    r.fill_alpha(menu_x, menu_y, sbw, menu_h, x18session::to_x18(Color(0, 0, 0, 70)));
+    r.fill_alpha(menu_x + sbw, menu_y, 1, menu_h, x18session::to_x18(theme::GLASS_EDGE));
 
     const char* categories[] = {"Favorites", "Applications", "Places", "System"};
     for (int i = 0; i < 4; i++) {
         int sy = menu_y + 12 + i * 28;
         if (i == launcher_cat_hover) {
-            graphics::fill_rounded_rect_alpha(menu_x + 4, sy - 2, sbw - 8, 24, 8,
-                Color(theme::ACCENT.r, theme::ACCENT.g, theme::ACCENT.b, 190));
+            r.fill_round_alpha(menu_x + 4, sy - 2, sbw - 8, 24, 8,
+                x18session::to_x18(Color(theme::ACCENT.r, theme::ACCENT.g, theme::ACCENT.b, 190)));
         }
         font::draw_string(menu_x + 12, sy + 3, categories[i],
                          i == launcher_cat_hover ? theme::TEXT_W : theme::TEXT_DIM);
@@ -536,12 +577,12 @@ static void draw_launcher() {
 
         bool hov = (i == launcher_hover);
         if (hov) {
-            graphics::fill_rounded_rect_alpha(ax - 4, iy, menu_w - sbw - 8, item_h - 2, 8,
-                theme::GLASS_HOVER);
+            r.fill_round_alpha(ax - 4, iy, menu_w - sbw - 8, item_h - 2, 8,
+                x18session::to_x18(theme::GLASS_HOVER));
         }
 
         // Icon circle
-        graphics::fill_circle(ax + 12, iy + 12, 10, app_list[i].accent);
+        r.fill_circle(ax + 12, iy + 12, 10, x18session::to_x18(app_list[i].accent));
         // Icon letter
         int iw = font::text_width(app_list[i].icon);
         font::draw_string(ax + 12 - iw / 2, iy + 4, app_list[i].icon, theme::TEXT_W);
@@ -551,14 +592,14 @@ static void draw_launcher() {
 
         // Running indicator
         if (app_list[i].running) {
-            graphics::fill_circle(ax + menu_w - sbw - 20, iy + 12, 3, theme::ACCENT);
+            r.fill_circle(ax + menu_w - sbw - 20, iy + 12, 3, x18session::to_x18(theme::ACCENT));
         }
     }
 
     // Search bar at bottom
     int search_y = menu_y + menu_h - 40;
-    graphics::fill_rounded_rect_alpha(ax - 4, search_y, menu_w - sbw - 8, 32, 8, Color(0, 0, 0, 80));
-    graphics::draw_rounded_rect_alpha(ax - 4, search_y, menu_w - sbw - 8, 32, 8, theme::GLASS_EDGE);
+    r.fill_round_alpha(ax - 4, search_y, menu_w - sbw - 8, 32, 8, x18session::to_x18(Color(0, 0, 0, 80)));
+    r.stroke_round_alpha(ax - 4, search_y, menu_w - sbw - 8, 32, 8, x18session::to_x18(theme::GLASS_EDGE));
     const char* search_text = launcher_search_len > 0 ? launcher_search : "Search...";
     Color search_color = launcher_search_len > 0 ? theme::TEXT_W : theme::TEXT_DIM;
     font::draw_string(ax + 4, search_y + 8, search_text, search_color);
@@ -566,7 +607,7 @@ static void draw_launcher() {
     static int search_blink = 0;
     search_blink++;
     if ((search_blink / 30) % 2 == 0) {
-        graphics::fill_rect(ax + 4 + launcher_search_len * 8, search_y + 8, 1, 14, theme::ACCENT);
+        r.fill(ax + 4 + launcher_search_len * 8, search_y + 8, 1, 14, x18session::to_x18(theme::ACCENT));
     }
 }
 
@@ -587,16 +628,19 @@ static void draw_ctx_menu() {
     if (cmx + mw > (int)fw) cmx = fw - mw;
     if (cmy + mh > (int)fh - theme::PANEL_H) cmy = fh - theme::PANEL_H - mh;
 
+    x18::Surface scr = x18session::surface();
+    x18::Raster r(scr);
+
     // Glass background
-    graphics::fill_rounded_rect_alpha(cmx, cmy, mw, mh, 12, theme::GLASS_MENU);
-    graphics::draw_rounded_rect_alpha(cmx, cmy, mw, mh, 12, theme::GLASS_EDGE);
+    r.fill_round_alpha(cmx, cmy, mw, mh, 12, x18session::to_x18(theme::GLASS_MENU));
+    r.stroke_round_alpha(cmx, cmy, mw, mh, 12, x18session::to_x18(theme::GLASS_EDGE));
 
     const char* items[] = {"Configure Desktop", "Open Terminal", "Leave"};
     for (int i = 0; i < 3; i++) {
         int iy = cmy + 4 + i * item_h;
         bool hov = (i == ctx_menu_hover);
         if (hov) {
-            graphics::fill_rounded_rect_alpha(cmx + 4, iy, mw - 8, item_h - 4, 8, theme::GLASS_HOVER);
+            r.fill_round_alpha(cmx + 4, iy, mw - 8, item_h - 4, 8, x18session::to_x18(theme::GLASS_HOVER));
         }
         font::draw_string(cmx + 12, iy + 6, items[i],
                          hov ? theme::ACCENT : theme::TEXT_W);
@@ -615,17 +659,20 @@ static void draw_power_menu() {
     int pmx = fw - mw - 8;
     int pmy = fh - theme::PANEL_H - mh - 8;
 
-    graphics::fill_rounded_rect_alpha(pmx, pmy, mw, mh, 14, theme::GLASS_MENU);
-    graphics::draw_rounded_rect_alpha(pmx, pmy, mw, mh, 14, theme::GLASS_EDGE);
+    x18::Surface scr = x18session::surface();
+    x18::Raster r(scr);
+
+    r.fill_round_alpha(pmx, pmy, mw, mh, 14, x18session::to_x18(theme::GLASS_MENU));
+    r.stroke_round_alpha(pmx, pmy, mw, mh, 14, x18session::to_x18(theme::GLASS_EDGE));
 
     const char* items[] = {"Sleep", "Restart", "Power Off"};
     Color dots[] = {theme::ACCENT, theme::BTN_MINIMIZE, theme::BTN_CLOSE};
     for (int i = 0; i < 3; i++) {
         int iy = pmy + 8 + i * item_h;
         if (i == power_menu_hover) {
-            graphics::fill_rounded_rect_alpha(pmx + 6, iy, mw - 12, item_h - 4, 10, theme::GLASS_HOVER);
+            r.fill_round_alpha(pmx + 6, iy, mw - 12, item_h - 4, 10, x18session::to_x18(theme::GLASS_HOVER));
         }
-        graphics::fill_circle(pmx + 24, iy + item_h / 2 - 5, 4, dots[i]);
+        r.fill_circle(pmx + 24, iy + item_h / 2 - 5, 4, x18session::to_x18(dots[i]));
         font::draw_string(pmx + 40, iy + 13, items[i],
                           i == power_menu_hover ? theme::TEXT_W : theme::TEXT_DIM);
     }
@@ -642,7 +689,7 @@ static void handle_launcher_key(char c) {
         launcher_search[launcher_search_len] = 0;
     }
 }
-// ==================== WINDOW DRAWING (Liquid Glass) ====================
+// ==================== WINDOW DRAWING (Xandr / Liquid Glass) ====================
 static void draw_window(gui::Window* w) {
     if (!w || !w->visible || !w->active) return;
 
@@ -653,26 +700,30 @@ static void draw_window(gui::Window* w) {
     int th = theme::WIN_TITLE_H;
     int R = theme::RADIUS;
 
+    // Chrome рисуется движком Xandr поверх back-буфера ядра (единый рендерер).
+    x18::Surface scr = x18session::surface();
+    x18::Raster r(scr);
+
     // Soft glass shadow (multiple alpha layers over whatever is behind)
     for (int s = 5; s >= 1; s--) {
-        graphics::fill_rounded_rect_alpha(x + s, y + s, ww, wh, R,
-            Color(0, 0, 0, (uint8_t)(12 * (6 - s))));
+        r.fill_round_alpha(x + s, y + s, ww, wh, R,
+            x18::Color(0, 0, 0, (uint8_t)(12 * (6 - s))));
     }
 
     // Translucent rounded body
-    graphics::fill_rounded_rect_alpha(x, y, ww, wh, R, theme::GLASS_WIN);
+    r.fill_round_alpha(x, y, ww, wh, R, x18session::to_x18(theme::GLASS_WIN));
 
     // Translucent title bar (rounded top corners)
-    graphics::fill_rounded_rect_top_alpha(x, y, ww, th, R, theme::GLASS_TITLE);
+    r.fill_round_top_alpha(x, y, ww, th, R, x18session::to_x18(theme::GLASS_TITLE));
 
     // Glass rim
     Color rim = w->focused
         ? Color(theme::ACCENT.r, theme::ACCENT.g, theme::ACCENT.b, 150)
         : theme::GLASS_EDGE;
-    graphics::draw_rounded_rect_alpha(x, y, ww, wh, R, rim);
+    r.stroke_round_alpha(x, y, ww, wh, R, x18session::to_x18(rim), 1);
 
     // Shine line under the title bar
-    graphics::fill_rect_alpha(x + R, y + th, ww - 2 * R, 1, theme::GLASS_SHINE);
+    r.fill_alpha(x + R, y + th, ww - 2 * R, 1, x18session::to_x18(theme::GLASS_SHINE));
 
     // Window buttons on RIGHT side (KDE style: close, maximize, minimize)
     int btn_y = y + 6;
@@ -680,19 +731,16 @@ static void draw_window(gui::Window* w) {
     int btn_gap = 2;
     // Close button (rightmost)
     int close_x = x + ww - btn_size - 6;
-    graphics::fill_rounded_rect_alpha(close_x, btn_y, btn_size, btn_size, 6, theme::BTN_CLOSE);
-    // Draw X
+    r.fill_round_alpha(close_x, btn_y, btn_size, btn_size, 6, x18session::to_x18(theme::BTN_CLOSE));
     font::draw_string(close_x + 5, btn_y + 3, "x", theme::TEXT_W);
     // Maximize button
     int max_x = close_x - btn_size - btn_gap;
-    graphics::fill_rounded_rect_alpha(max_x, btn_y, btn_size, btn_size, 6, theme::BTN_MAXIMIZE);
-    // Draw square
+    r.fill_round_alpha(max_x, btn_y, btn_size, btn_size, 6, x18session::to_x18(theme::BTN_MAXIMIZE));
     graphics::draw_rect(max_x + 5, btn_y + 5, 10, 10, theme::TEXT_W, 1);
     // Minimize button
     int min_x = max_x - btn_size - btn_gap;
-    graphics::fill_rounded_rect_alpha(min_x, btn_y, btn_size, btn_size, 6, theme::BTN_MINIMIZE);
-    // Draw dash
-    graphics::fill_rect(min_x + 5, btn_y + 9, 10, 2, theme::TEXT_W);
+    r.fill_round_alpha(min_x, btn_y, btn_size, btn_size, 6, x18session::to_x18(theme::BTN_MINIMIZE));
+    r.fill(min_x + 5, btn_y + 9, 10, 2, x18session::to_x18(theme::TEXT_W));
 
     // Title text (left-aligned, KDE style)
     font::draw_string(x + 12, y + 9, w->title, theme::TEXT_W);
@@ -1455,9 +1503,23 @@ extern "C" void __attribute__((noreturn)) kernel_main64(uint32_t mb2_magic, void
 
     framebuffer::clear(0xFF292D33);
     cache_wallpaper();
+    compositor::init();
     draw_boot_screen();
-    boot_pause_ms(5000);
+    boot_pause_ms(1500);
     debug_print("[FOXIWIUM] framebuffer ready\n");
+
+    // --- Сессия Xandr (X18) в ядре -------------------------------------
+    // Движок x18 рендерит рабочий стол прямо в back-буфер ядра. Это проверка
+    // интеграции: движок собирается в ядро и отдаёт детерминированную чексумму.
+    {
+        uint32_t x18_sum = x18session::draw_desktop(0);
+        framebuffer::flip();
+        serial_print("[XANDR] X18 session render checksum=");
+        serial_print_hex32(x18_sum);
+        serial_print("\n");
+        debug_print("[XANDR] X18 session ready\n");
+        boot_pause_ms(2500);
+    }
 
     // Init VFS
     vfs::init();
@@ -1563,13 +1625,16 @@ extern "C" void __attribute__((noreturn)) kernel_main64(uint32_t mb2_magic, void
     // основной цикл рабочего стола.
     if (shell_pid > 0) {
         pcb.current = shell_pid - 1;
-        proc::run_user_process(pcb.processes[shell_pid - 1]);
+        Process& sp = pcb.processes[shell_pid - 1];
+        sp.state = PROC_RUNNING;
+        proc::run_user_process(sp);
         asm volatile("sti");
         debug_print("[FOXIWIUM] user process finished\n");
     }
 
     int tick = 0;
     bool dirty = true;
+    serial_print("[FOXIWIUM] entering desktop loop\n");
     int prev_cursor_x = -100, prev_cursor_y = -100;
     static constexpr int CURSOR_SAVE_SIZE = 20;
     uint32_t cursor_save[CURSOR_SAVE_SIZE * CURSOR_SAVE_SIZE];
@@ -2258,7 +2323,12 @@ extern "C" void __attribute__((noreturn)) kernel_main64(uint32_t mb2_magic, void
                 for (int i = 0; i < cs; i++) graphics::put_pixel(mx, my + i, Color(0, 0, 0));
                 graphics::put_pixel(mx + cs + 1, my, Color(0, 0, 0));
 
-                framebuffer::flip();
+                // Компоновка: на экран идёт только область вокруг курсора.
+                compositor::begin();
+                if (prev_cursor_x >= 0 && prev_cursor_y >= 0)
+                    compositor::mark(prev_cursor_x, prev_cursor_y, CURSOR_SAVE_SIZE, CURSOR_SAVE_SIZE);
+                compositor::mark(mx, my, CURSOR_SAVE_SIZE, CURSOR_SAVE_SIZE);
+                compositor::present();
                 prev_cursor_x = mx;
                 prev_cursor_y = my;
             }
@@ -2267,6 +2337,10 @@ extern "C" void __attribute__((noreturn)) kernel_main64(uint32_t mb2_magic, void
         }
 
         dirty = false;
+
+        // Полная перерисовка кадра в композиционный буфер X18.
+        compositor::begin();
+        compositor::mark_all();
 
         draw_wallpaper();
 
@@ -2298,7 +2372,7 @@ extern "C" void __attribute__((noreturn)) kernel_main64(uint32_t mb2_magic, void
         prev_cursor_y = my;
         prev_right_pressed = mright;
 
-        framebuffer::flip();
+        compositor::present();
         pit::sleep(16);
     }
 }

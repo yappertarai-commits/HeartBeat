@@ -1,5 +1,8 @@
 # Build artifacts
 build/
 
+# Vendored Linux drivers tree (redundant with Linux 7.2.9 import)
+kernel/drivers.dir/
+
 # Editor
 *.swp

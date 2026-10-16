@@ -55,14 +55,14 @@ inline void draw(gui::Window* w) {
     // System info
     struct InfoLine { const char* key; const char* value; };
     InfoLine info[] = {
-        {"Kernel",    "Foxiwium Kernel 0.0-1-generic"},
+        {"Kernel",    "HeartBeat 0.0-1-generic"},
         {"Arch",      "x86_64 (long mode)"},
         {"Boot",      "Multiboot2 / GRUB"},
-        {"Memory",    ""},
+        {"Memory",    "Driver error"},
         {"Display",   "1920x1080x32bpp"},
-        {"Shell",     "fox-sh (embedded)"},
+        {"Shell",     "love (embedded)"},
         {"Theme",     "FramePerfect UI 2/3"},
-        {"License",   "MIT"},
+        {"License",   "GPL"},
     };
 
     int info_count = 8;

@@ -2,6 +2,7 @@
 
 global context_switch
 global enter_user_mode
+global resume_user_from_saved_frame
 
 section .text
 
@@ -41,4 +42,26 @@ enter_user_mode:
 
     mov [rdi], rsp
     mov rsp, rsi
+    iretq
+
+; Возврат в user-mode из сохранённого InterruptFrame на стеке.
+; Вход: rdi = указатель на InterruptFrame (с размеченностью idt::InterruptFrame)
+resume_user_from_saved_frame:
+    mov rsp, rdi
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    add rsp, 16
     iretq

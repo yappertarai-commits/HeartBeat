@@ -21,6 +21,7 @@ extern volatile int cursor_y;
 
 extern volatile bool left_pressed;
 extern volatile bool right_pressed;
+extern volatile bool middle_pressed;
 extern volatile bool left_pressed_prev;
 extern volatile int scroll_delta;
 

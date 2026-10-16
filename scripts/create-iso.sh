@@ -18,8 +18,13 @@ ISO_DIR="$(mktemp -d "$BUILD_DIR/isodir.XXXXXX")"
 trap 'rm -rf "$ISO_DIR"' EXIT
 mkdir -p "$ISO_DIR/boot/grub"
 
-# Copy kernel
-cp "$BUILD_DIR/foxiwium.bin" "$ISO_DIR/boot/foxiwium.bin"
+# Copy kernel (GRUB path stays /boot/foxiwium.bin)
+KERNEL_BIN="$(ls "$BUILD_DIR"/HeartBeat-* "$BUILD_DIR"/foxiwium.bin 2>/dev/null | head -n1)"
+if [ -z "$KERNEL_BIN" ]; then
+    echo "[iso] ERROR: kernel binary not found in $BUILD_DIR" >&2
+    exit 1
+fi
+cp "$KERNEL_BIN" "$ISO_DIR/boot/foxiwium.bin"
 
 # Copy initramfs
 if [ -f "$BUILD_DIR/initramfs.img" ]; then

@@ -1,6 +1,11 @@
 # Foxiwium OS - Makefile
 # Build system for x86_64 kernel with cross-compiler
 
+TOP_DIR    := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+
+# Xandr software renderer (engine headers are linked into the kernel)
+XANDR_DIR ?= $(TOP_DIR)/../Xandr
+
 # Cross-compiler (fall back to host tools if the x86_64-elf toolchain is missing)
 CROSS   ?= /home/licheng/os/toolchain/sysroot/bin/x86_64-elf
 ifeq ($(shell command -v $(CROSS)-g++ 2>/dev/null),)
@@ -20,7 +25,7 @@ CFLAGS  := -ffreestanding -nostdlib -fno-exceptions -fno-rtti \
            -fno-pic -fno-pie -no-pie \
            -Wall -Wextra -Werror -g -O2 \
            -MMD -MP \
-           -I kernel
+           -I kernel -I $(XANDR_DIR) -DFOXIWIUM_KERNEL
 CXXFLAGS := $(CFLAGS) -fno-use-cxa-atexit -fno-threadsafe-statics -fno-exceptions -fno-rtti
 
 # Directories
@@ -30,10 +35,10 @@ SCRIPTS  := scripts
 LINKER   := $(SRCDIR)/linker.ld
 LDFLAGS  := -T $(LINKER) -nostdlib -z max-page-size=0x1000 -z noexecstack
 
-# Sources (exclude userspace flat binaries)
-ASM_SOURCES := $(filter-out $(SRCDIR)/userspace/%, $(shell find $(SRCDIR) -name '*.asm' | sort))
-CXX_SOURCES := $(shell find $(SRCDIR) -name '*.cpp' | sort)
-C_SOURCES   := $(shell find $(SRCDIR) -name '*.c' | sort)
+# Sources (exclude userspace flat binaries and Linux drivers tree)
+ASM_SOURCES := $(filter-out $(SRCDIR)/userspace/% $(SRCDIR)/drivers.dir/% $(SRCDIR)/build/%, $(shell find $(SRCDIR) -name '*.asm' | sort))
+CXX_SOURCES := $(filter-out $(SRCDIR)/drivers.dir/% $(SRCDIR)/build/%, $(shell find $(SRCDIR) -name '*.cpp' | sort))
+C_SOURCES   := $(filter-out $(SRCDIR)/drivers.dir/% $(SRCDIR)/build/%, $(shell find $(SRCDIR) -name '*.c' | sort))
 
 # Objects
 ASM_OBJECTS := $(patsubst $(SRCDIR)/%.asm,$(BUILDDIR)/%.o,$(ASM_SOURCES))
@@ -43,13 +48,16 @@ C_OBJECTS   := $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(C_SOURCES))
 OBJECTS := $(ASM_OBJECTS) $(CXX_OBJECTS) $(C_OBJECTS)
 
 # Output
-KERNEL   := $(BUILDDIR)/foxiwium.bin
+KERNEL   := $(BUILDDIR)/HeartBeat-0.0.0-1-generic
 SHELL_BIN := $(BUILDDIR)/shell.bin
 ISO      := $(BUILDDIR)/foxiwium.iso
 
 # QEMU
 QEMU     := qemu-system-x86_64
-QEMUFLAGS := -m 512M -display sdl -accel kvm -nic user,model=rtl8139
+# KVM only when /dev/kvm is actually usable, otherwise fall back to TCG
+ACCEL    := $(shell test -r /dev/kvm -a -w /dev/kvm && echo kvm || echo tcg)
+QEMUFLAGS := -m 512M -accel $(ACCEL) -nic user,model=rtl8139
+QEMUDISPLAY := -display sdl
 
 .PHONY: all clean kernel iso disk initramfs shell run run-nographic run-disk debug
 
@@ -86,7 +94,6 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 
 # ---- Shell (userspace: пользовательский процесс Xandr) ----
 # Бинарь собирается в репозитории Xandr и встраивается как "shell".
-XANDR_DIR ?= /home/licheng/LC/foxiwium-linux/Xandr
 XANDR_BIN := $(XANDR_DIR)/build/x18.bin
 
 shell: $(SHELL_BIN)
@@ -115,17 +122,17 @@ disk: kernel initramfs
 
 # ---- QEMU ----
 run: iso
-	$(QEMU) -cdrom $(ISO) $(QEMUFLAGS)
+	$(QEMU) -cdrom $(ISO) $(QEMUFLAGS) $(QEMUDISPLAY)
 
 run-nographic: iso
-	$(QEMU) -cdrom $(ISO) $(QEMUFLAGS) -nographic -serial stdio
+	$(QEMU) -cdrom $(ISO) $(QEMUFLAGS) -display none -serial stdio
 
 run-disk: disk
 	$(QEMU) -drive file=$(BUILDDIR)/foxiwium.img,format=raw $(QEMUFLAGS)
 
 # ---- Debug ----
 debug: iso
-	$(QEMU) -cdrom $(ISO) $(QEMUFLAGS) -S -s &
+	$(QEMU) -cdrom $(ISO) $(QEMUFLAGS) $(QEMUDISPLAY) -S -s &
 	$(CROSS)-gdb -ex "target remote :1234" $(KERNEL)
 
 # ---- Clean ----

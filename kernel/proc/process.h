@@ -24,6 +24,8 @@ struct TrapFrame {
     uint64_t rip, cs, rflags, rsp, ss;
 };
 
+#include "../drivers/interrupts/idt.h"
+
 struct Process {
     int pid;
     ProcessState state;
@@ -41,6 +43,9 @@ struct Process {
 
     int exit_code;
     bool killed;
+
+    bool has_saved_frame;
+    uint8_t saved_frame[sizeof(idt::InterruptFrame)];
 };
 
 struct ProcessControlBlock {
@@ -53,6 +58,7 @@ extern ProcessControlBlock pcb;
 
 extern "C" void context_switch(uint64_t* old_rsp, uint64_t new_rsp);
 extern "C" void enter_user_mode(uint64_t* resume_rsp, uint64_t frame_rsp);
+extern "C" void resume_user_from_saved_frame(void* frame);
 
 // Точка возврата в основной цикл ядра после завершения user-процесса.
 static uint64_t g_resume_rsp = 0;
@@ -154,6 +160,17 @@ inline void run_user_process(Process& p) {
     gdt::set_kernel_stack(p.kernel_stack_top);
     vmm::switch_pml4(p.page_table);
     enter_user_mode(&g_resume_rsp, p.rsp);
+}
+
+inline void resume_user(Process& p) {
+    gdt::set_kernel_stack(p.kernel_stack_top);
+    vmm::switch_pml4(p.page_table);
+    if (p.has_saved_frame) {
+        p.has_saved_frame = false;
+        resume_user_from_saved_frame(&p.saved_frame);
+    } else {
+        enter_user_mode(&g_resume_rsp, p.rsp);
+    }
 }
 
 inline void exit_process(int code) {

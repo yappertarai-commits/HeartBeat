@@ -1,0 +1,5 @@
+#!/usr/bin/bash
+rm -f ../CONTRIBUTORS
+ln -s ./CREDITS CONTRIBUTORS
+mv ./CONTRIBUTORS ../CONTRIBUTORS
+exit 0 

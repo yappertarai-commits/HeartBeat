@@ -58,7 +58,7 @@ static SettingSection sections[] = {
         "Appearance", {
             {"Theme", "Dark", false, nullptr},
             {"Accent Color", "Purple", false, nullptr},
-            {"Wallpaper", "Gradient", false, nullptr},
+            {"Wallpaper", "Main", false, nullptr},
             {"Font Size", "Normal", false, nullptr},
             {"Animations", "", true, &sstate.show_animations},
         }, 5
@@ -67,8 +67,8 @@ static SettingSection sections[] = {
         "Display", {
             {"Resolution", "1920x1080", false, nullptr},
             {"Refresh Rate", "60 Hz", false, nullptr},
-            {"Brightness", "", false, nullptr},
-            {"Night Mode", "", true, nullptr},
+            {"Brightness", "Driver error", false, nullptr},
+            {"Night Mode", "Driver error", true, nullptr},
         }, 4
     },
     {
@@ -81,7 +81,7 @@ static SettingSection sections[] = {
     },
     {
         "System", {
-            {"Hostname", "foxiwium", false, nullptr},
+            {"Hostname", "10Plan OS", false, nullptr},
             {"Timezone", "UTC", false, nullptr},
             {"Auto-login", "", true, nullptr},
             {"Sound", "", true, nullptr},
@@ -89,11 +89,11 @@ static SettingSection sections[] = {
     },
     {
         "About", {
-            {"OS Name", "Foxiwium OS", false, nullptr},
+            {"OS Name", "10Plan OS", false, nullptr},
             {"Version", "v1.7.3", false, nullptr},
-            {"Kernel", "0.0-1-generic", false, nullptr},
+            {"Kernel", "heartBeat 0.0-1-generic", false, nullptr},
             {"Architecture", "x86_64", false, nullptr},
-            {"License", "MIT", false, nullptr},
+            {"License", "GPL v3.0", false, nullptr},
         }, 5
     },
 };
